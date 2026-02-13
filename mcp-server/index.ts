@@ -9,7 +9,7 @@ let figmaSocket: WebSocket | null = null;
 let pendingRequests = new Map<string, { resolve: (value: any) => void; reject: (reason: any) => void }>();
 let requestId = 0;
 
-const wss = new WebSocketServer({ port: WS_PORT });
+const wss = new WebSocketServer({ host: "0.0.0.0", port: WS_PORT });
 
 wss.on("connection", (ws) => {
   console.error(`[WS] Figma plugin connected`);
@@ -324,6 +324,76 @@ server.tool(
     alignItems: z.enum(["START", "CENTER", "END"]).optional().describe("Alignment of items"),
   },
   async (params) => mcpCall("set_auto_layout", params)
+);
+
+// =====================
+// Phase 4: Design Kit Tools
+// =====================
+
+server.tool(
+  "search_components",
+  "Search for components and component sets in the current page by name. Returns component IDs, keys, variant properties, and children.",
+  {
+    query: z.string().optional().default("").describe("Search query to filter component names (case-insensitive, partial match). Leave empty to list all components."),
+  },
+  async (params) => mcpCall("search_components", params)
+);
+
+server.tool(
+  "create_instance",
+  "Create an instance of a component. Use search_components first to find the component ID.",
+  {
+    componentId: z.string().describe("The component node ID to instantiate"),
+    x: z.number().optional().default(0).describe("X position"),
+    y: z.number().optional().default(0).describe("Y position"),
+    parentFrameId: z.string().optional().describe("Parent frame node ID to place the instance inside"),
+  },
+  async (params) => mcpCall("create_instance", params)
+);
+
+server.tool(
+  "set_variant",
+  "Change the variant of a component instance. You can swap to a different variant component or set variant properties by name.",
+  {
+    nodeId: z.string().describe("Instance node ID to modify"),
+    swapComponentId: z.string().optional().describe("Component ID to swap the instance to (use for switching to a specific variant)"),
+    variantProperties: z.record(z.string(), z.string()).optional().describe("Variant properties to set as key-value pairs, e.g. {\"Size\": \"Large\", \"State\": \"Hover\"}"),
+  },
+  async (params) => mcpCall("set_variant", params)
+);
+
+server.tool(
+  "apply_style",
+  "Apply local paint, text, stroke, or effect styles to a node. Use get_styles first to find style IDs.",
+  {
+    nodeId: z.string().describe("Node ID to apply styles to"),
+    paintStyleId: z.string().optional().describe("Paint style ID for fills"),
+    strokeStyleId: z.string().optional().describe("Paint style ID for strokes"),
+    textStyleId: z.string().optional().describe("Text style ID (only for text nodes)"),
+    effectStyleId: z.string().optional().describe("Effect style ID"),
+  },
+  async (params) => mcpCall("apply_style", params)
+);
+
+server.tool(
+  "group_nodes",
+  "Group multiple nodes together. All nodes must share the same parent.",
+  {
+    nodeIds: z.array(z.string()).describe("Array of node IDs to group together"),
+    name: z.string().optional().default("Group").describe("Name for the group"),
+  },
+  async (params) => mcpCall("group_nodes", params)
+);
+
+server.tool(
+  "set_constraints",
+  "Set responsive constraints on a node (how it behaves when its parent frame is resized)",
+  {
+    nodeId: z.string().describe("Node ID to set constraints on"),
+    horizontal: z.enum(["MIN", "CENTER", "MAX", "STRETCH", "SCALE"]).optional().describe("Horizontal constraint: MIN (left), CENTER, MAX (right), STRETCH, or SCALE"),
+    vertical: z.enum(["MIN", "CENTER", "MAX", "STRETCH", "SCALE"]).optional().describe("Vertical constraint: MIN (top), CENTER, MAX (bottom), STRETCH, or SCALE"),
+  },
+  async (params) => mcpCall("set_constraints", params)
 );
 
 // --- Start ---

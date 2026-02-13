@@ -214,6 +214,26 @@ figma.ui.onmessage = async (msg: any) => {
         handleSetAutoLayout(id, params);
         break;
 
+      // Phase 4: Design Kit
+      case "search_components":
+        handleSearchComponents(id, params);
+        break;
+      case "create_instance":
+        handleCreateInstance(id, params);
+        break;
+      case "set_variant":
+        handleSetVariant(id, params);
+        break;
+      case "apply_style":
+        await handleApplyStyle(id, params);
+        break;
+      case "group_nodes":
+        handleGroupNodes(id, params);
+        break;
+      case "set_constraints":
+        handleSetConstraints(id, params);
+        break;
+
       default:
         sendResponse(id, undefined, `Unknown action: ${action}`);
     }
@@ -633,5 +653,242 @@ function handleSetAutoLayout(id: string, params: any) {
     paddingRight: frame.paddingRight,
     paddingBottom: frame.paddingBottom,
     paddingLeft: frame.paddingLeft,
+  });
+}
+
+// --- Phase 4: Design Kit Handlers ---
+
+function findComponentsRecursive(node: BaseNode, query: string, results: any[]) {
+  if (node.type === "COMPONENT" || node.type === "COMPONENT_SET") {
+    if (!query || node.name.toLowerCase().includes(query.toLowerCase())) {
+      const info: Record<string, any> = {
+        nodeId: node.id,
+        name: node.name,
+        type: node.type,
+      };
+      if (node.type === "COMPONENT") {
+        const comp = node as ComponentNode;
+        info.key = comp.key;
+        info.width = comp.width;
+        info.height = comp.height;
+      }
+      if (node.type === "COMPONENT_SET") {
+        const cs = node as ComponentSetNode;
+        info.variantGroupProperties = cs.variantGroupProperties;
+        info.children = cs.children.map((c) => ({
+          nodeId: c.id,
+          name: c.name,
+          type: c.type,
+        }));
+      }
+      results.push(info);
+    }
+  }
+  if ("children" in node) {
+    for (const child of (node as ChildrenMixin).children) {
+      findComponentsRecursive(child, query, results);
+    }
+  }
+}
+
+function handleSearchComponents(id: string, params: any) {
+  const query = params.query || "";
+  const results: any[] = [];
+  findComponentsRecursive(figma.currentPage, query, results);
+  sendResponse(id, { components: results, count: results.length });
+}
+
+function handleCreateInstance(id: string, params: any) {
+  const node = figma.getNodeById(params.componentId);
+  if (!node || node.type !== "COMPONENT") {
+    sendResponse(id, undefined, `Component ${params.componentId} not found`);
+    return;
+  }
+  const component = node as ComponentNode;
+  const instance = component.createInstance();
+  instance.x = params.x ?? 0;
+  instance.y = params.y ?? 0;
+
+  if (params.parentFrameId) {
+    const parent = figma.getNodeById(params.parentFrameId);
+    if (parent && "appendChild" in parent) {
+      (parent as ChildrenMixin).appendChild(instance);
+    } else {
+      sendResponse(id, undefined, `Parent node ${params.parentFrameId} not found or is not a container`);
+      return;
+    }
+  }
+
+  sendResponse(id, {
+    nodeId: instance.id,
+    name: instance.name,
+    componentId: component.id,
+    width: instance.width,
+    height: instance.height,
+  });
+}
+
+function handleSetVariant(id: string, params: any) {
+  const node = figma.getNodeById(params.nodeId);
+  if (!node || node.type !== "INSTANCE") {
+    sendResponse(id, undefined, `Instance node ${params.nodeId} not found`);
+    return;
+  }
+  const instance = node as InstanceNode;
+
+  // If swapComponentId is provided, swap to a specific variant component
+  if (params.swapComponentId) {
+    const swapTarget = figma.getNodeById(params.swapComponentId);
+    if (!swapTarget || swapTarget.type !== "COMPONENT") {
+      sendResponse(id, undefined, `Swap target component ${params.swapComponentId} not found`);
+      return;
+    }
+    instance.swapComponent(swapTarget as ComponentNode);
+  }
+
+  // If variantProperties is provided, set them individually
+  if (params.variantProperties && typeof params.variantProperties === "object") {
+    const props = params.variantProperties;
+    const keys = Object.keys(props);
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      const value = props[key];
+      try {
+        instance.setProperties({ [key]: value as string });
+      } catch (e: any) {
+        // Continue setting other properties even if one fails
+      }
+    }
+  }
+
+  sendResponse(id, {
+    nodeId: instance.id,
+    name: instance.name,
+    mainComponentId: instance.mainComponent?.id,
+    mainComponentName: instance.mainComponent?.name,
+    componentProperties: instance.componentProperties,
+  });
+}
+
+async function handleApplyStyle(id: string, params: any) {
+  const node = figma.getNodeById(params.nodeId);
+  if (!node || node.type === "DOCUMENT" || node.type === "PAGE") {
+    sendResponse(id, undefined, `Node ${params.nodeId} not found`);
+    return;
+  }
+  const sceneNode = node as SceneNode;
+  const applied: string[] = [];
+
+  if (params.paintStyleId && "fillStyleId" in sceneNode) {
+    try {
+      (sceneNode as any).fillStyleId = params.paintStyleId;
+      applied.push("paintStyle");
+    } catch (e: any) {
+      // style might not be compatible
+    }
+  }
+
+  if (params.strokeStyleId && "strokeStyleId" in sceneNode) {
+    try {
+      (sceneNode as any).strokeStyleId = params.strokeStyleId;
+      applied.push("strokeStyle");
+    } catch (e: any) {
+      // style might not be compatible
+    }
+  }
+
+  if (params.textStyleId && node.type === "TEXT") {
+    const textNode = node as TextNode;
+    // Load font from the text style first
+    const style = figma.getStyleById(params.textStyleId);
+    if (style && style.type === "TEXT") {
+      const textStyle = style as TextStyle;
+      await figma.loadFontAsync(textStyle.fontName);
+      textNode.textStyleId = params.textStyleId;
+      applied.push("textStyle");
+    }
+  }
+
+  if (params.effectStyleId && "effectStyleId" in sceneNode) {
+    try {
+      (sceneNode as any).effectStyleId = params.effectStyleId;
+      applied.push("effectStyle");
+    } catch (e: any) {
+      // style might not be compatible
+    }
+  }
+
+  sendResponse(id, {
+    nodeId: sceneNode.id,
+    appliedStyles: applied,
+    details: getNodeDetails(sceneNode),
+  });
+}
+
+function handleGroupNodes(id: string, params: any) {
+  const nodeIds: string[] = params.nodeIds;
+  if (!nodeIds || nodeIds.length < 1) {
+    sendResponse(id, undefined, "At least one node ID is required");
+    return;
+  }
+
+  const nodes: SceneNode[] = [];
+  for (const nid of nodeIds) {
+    const n = figma.getNodeById(nid);
+    if (!n || n.type === "DOCUMENT" || n.type === "PAGE") {
+      sendResponse(id, undefined, `Node ${nid} not found`);
+      return;
+    }
+    nodes.push(n as SceneNode);
+  }
+
+  // All nodes must share the same parent
+  const parent = nodes[0].parent;
+  if (!parent) {
+    sendResponse(id, undefined, "Cannot group: node has no parent");
+    return;
+  }
+  for (const n of nodes) {
+    if (n.parent !== parent) {
+      sendResponse(id, undefined, "All nodes must share the same parent to be grouped");
+      return;
+    }
+  }
+
+  const group = figma.group(nodes, parent as ChildrenMixin & BaseNode);
+  group.name = params.name || "Group";
+
+  sendResponse(id, {
+    nodeId: group.id,
+    name: group.name,
+    childCount: group.children.length,
+  });
+}
+
+function handleSetConstraints(id: string, params: any) {
+  const node = figma.getNodeById(params.nodeId);
+  if (!node || node.type === "DOCUMENT" || node.type === "PAGE") {
+    sendResponse(id, undefined, `Node ${params.nodeId} not found`);
+    return;
+  }
+  const sceneNode = node as SceneNode;
+
+  if (!("constraints" in sceneNode)) {
+    sendResponse(id, undefined, `Node ${params.nodeId} (${sceneNode.type}) does not support constraints`);
+    return;
+  }
+
+  const constraintNode = sceneNode as ConstraintMixin;
+  const current = constraintNode.constraints;
+
+  constraintNode.constraints = {
+    horizontal: params.horizontal || current.horizontal,
+    vertical: params.vertical || current.vertical,
+  };
+
+  sendResponse(id, {
+    nodeId: sceneNode.id,
+    name: sceneNode.name,
+    constraints: constraintNode.constraints,
   });
 }
