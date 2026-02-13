@@ -72,12 +72,16 @@
       statusEl.className = cls;
     }
 
+    const WS_URLS = ['ws://127.0.0.1:9000', 'ws://localhost:9000'];
+    let wsUrlIndex = 0;
+
     function connect() {
       if (ws) ws.close();
       setStatus('Connecting...', 'connecting');
-      log('Connecting to ws://127.0.0.1:9000...');
+      const url = WS_URLS[wsUrlIndex % WS_URLS.length];
+      log('Connecting to ' + url + '...');
 
-      ws = new WebSocket('ws://127.0.0.1:9000');
+      ws = new WebSocket(url);
 
       ws.onopen = () => {
         isConnected = true;
@@ -105,7 +109,13 @@
       };
 
       ws.onerror = (err) => {
-        log('WebSocket error', 'log-err');
+        log('WebSocket error on ' + url, 'log-err');
+        // Try next URL on error
+        wsUrlIndex++;
+        if (wsUrlIndex < WS_URLS.length) {
+          log('Trying fallback...', 'log-err');
+          setTimeout(connect, 500);
+        }
       };
     }
 

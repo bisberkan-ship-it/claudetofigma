@@ -8,6 +8,6 @@
   "networkAccess": {
     "allowedDomains": ["*"],
     "devAllowedDomains": ["*"],
-    "reasoning": "Connects to local MCP WebSocket server on port 9000"
+    "reasoning": "Connects to local MCP WebSocket server"
   }
 }
