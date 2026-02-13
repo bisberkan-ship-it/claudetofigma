@@ -1,0 +1,13 @@
+{
+  "name": "Claude to Figma",
+  "id": "claude-to-figma-plugin",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "networkAccess": {
+    "allowedDomains": ["*"],
+    "devAllowedDomains": ["*"],
+    "reasoning": "Connects to local MCP WebSocket server on port 9000"
+  }
+}
