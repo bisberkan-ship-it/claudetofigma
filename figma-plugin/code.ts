@@ -234,6 +234,17 @@ figma.ui.onmessage = async (msg: any) => {
         handleSetConstraints(id, params);
         break;
 
+      // Phase 5: External Library
+      case "import_component_by_key":
+        await handleImportComponentByKey(id, params);
+        break;
+      case "import_style_by_key":
+        await handleImportStyleByKey(id, params);
+        break;
+      case "get_instance_info":
+        handleGetInstanceInfo(id, params);
+        break;
+
       default:
         sendResponse(id, undefined, `Unknown action: ${action}`);
     }
@@ -891,4 +902,116 @@ function handleSetConstraints(id: string, params: any) {
     name: sceneNode.name,
     constraints: constraintNode.constraints,
   });
+}
+
+// --- Phase 5: External Library Handlers ---
+
+async function handleImportComponentByKey(id: string, params: any) {
+  try {
+    const component = await figma.importComponentByKeyAsync(params.key);
+
+    const instance = component.createInstance();
+    instance.x = params.x ?? 0;
+    instance.y = params.y ?? 0;
+
+    if (params.parentFrameId) {
+      const parent = figma.getNodeById(params.parentFrameId);
+      if (parent && "appendChild" in parent) {
+        (parent as ChildrenMixin).appendChild(instance);
+      } else {
+        sendResponse(id, undefined, `Parent node ${params.parentFrameId} not found or is not a container`);
+        return;
+      }
+    }
+
+    sendResponse(id, {
+      nodeId: instance.id,
+      name: instance.name,
+      componentKey: component.key,
+      componentName: component.name,
+      width: instance.width,
+      height: instance.height,
+    });
+  } catch (e: any) {
+    sendResponse(id, undefined, `Failed to import component: ${e.message}`);
+  }
+}
+
+async function handleImportStyleByKey(id: string, params: any) {
+  try {
+    const style = await figma.importStyleByKeyAsync(params.key);
+
+    const node = figma.getNodeById(params.nodeId);
+    if (!node || node.type === "DOCUMENT" || node.type === "PAGE") {
+      sendResponse(id, undefined, `Node ${params.nodeId} not found`);
+      return;
+    }
+    const sceneNode = node as SceneNode;
+    const applied: string[] = [];
+
+    if (style.type === "PAINT") {
+      if (params.target === "stroke" && "strokeStyleId" in sceneNode) {
+        (sceneNode as any).strokeStyleId = style.id;
+        applied.push("stroke");
+      } else if ("fillStyleId" in sceneNode) {
+        (sceneNode as any).fillStyleId = style.id;
+        applied.push("fill");
+      }
+    } else if (style.type === "TEXT" && node.type === "TEXT") {
+      const textNode = node as TextNode;
+      const textStyle = style as TextStyle;
+      await figma.loadFontAsync(textStyle.fontName);
+      textNode.textStyleId = style.id;
+      applied.push("text");
+    } else if (style.type === "EFFECT" && "effectStyleId" in sceneNode) {
+      (sceneNode as any).effectStyleId = style.id;
+      applied.push("effect");
+    }
+
+    sendResponse(id, {
+      nodeId: sceneNode.id,
+      styleName: style.name,
+      styleType: style.type,
+      appliedTo: applied,
+    });
+  } catch (e: any) {
+    sendResponse(id, undefined, `Failed to import style: ${e.message}`);
+  }
+}
+
+function handleGetInstanceInfo(id: string, params: any) {
+  const node = figma.getNodeById(params.nodeId);
+  if (!node) {
+    sendResponse(id, undefined, `Node ${params.nodeId} not found`);
+    return;
+  }
+
+  if (node.type === "INSTANCE") {
+    const instance = node as InstanceNode;
+    const main = instance.mainComponent;
+    sendResponse(id, {
+      nodeId: instance.id,
+      name: instance.name,
+      type: "INSTANCE",
+      mainComponent: main ? {
+        nodeId: main.id,
+        name: main.name,
+        key: main.key,
+        remote: main.remote,
+        parent: main.parent ? { nodeId: main.parent.id, name: main.parent.name, type: main.parent.type } : null,
+      } : null,
+      componentProperties: instance.componentProperties,
+    });
+  } else if (node.type === "COMPONENT") {
+    const comp = node as ComponentNode;
+    sendResponse(id, {
+      nodeId: comp.id,
+      name: comp.name,
+      type: "COMPONENT",
+      key: comp.key,
+      remote: comp.remote,
+    });
+  } else {
+    sendResponse(id, undefined, `Node ${params.nodeId} is ${node.type}, not an INSTANCE or COMPONENT`);
+  }
 }

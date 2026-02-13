@@ -396,6 +396,42 @@ server.tool(
   async (params) => mcpCall("set_constraints", params)
 );
 
+// =====================
+// Phase 5: External Library Tools
+// =====================
+
+server.tool(
+  "import_component_by_key",
+  "Import a component from an external team library by its key and create an instance. Use get_instance_info on an existing instance to find the key.",
+  {
+    key: z.string().describe("Component key from the team library"),
+    x: z.number().optional().default(0).describe("X position"),
+    y: z.number().optional().default(0).describe("Y position"),
+    parentFrameId: z.string().optional().describe("Parent frame node ID to place the instance inside"),
+  },
+  async (params) => mcpCall("import_component_by_key", params)
+);
+
+server.tool(
+  "import_style_by_key",
+  "Import a style from an external team library by its key and apply it to a node. Automatically detects style type (paint, text, effect).",
+  {
+    key: z.string().describe("Style key from the team library"),
+    nodeId: z.string().describe("Node ID to apply the imported style to"),
+    target: z.enum(["fill", "stroke"]).optional().default("fill").describe("For paint styles: apply as fill or stroke (default: fill)"),
+  },
+  async (params) => mcpCall("import_style_by_key", params)
+);
+
+server.tool(
+  "get_instance_info",
+  "Get detailed info about a component instance or component, including the main component's key (needed for import_component_by_key), remote status, and variant properties.",
+  {
+    nodeId: z.string().describe("Instance or Component node ID"),
+  },
+  async (params) => mcpCall("get_instance_info", params)
+);
+
 // --- Start ---
 async function main() {
   const transport = new StdioServerTransport();

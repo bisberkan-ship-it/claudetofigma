@@ -218,6 +218,16 @@ figma.ui.onmessage = (msg) => __awaiter(this, void 0, void 0, function* () {
             case "set_constraints":
                 handleSetConstraints(id, params);
                 break;
+            // Phase 5: External Library
+            case "import_component_by_key":
+                yield handleImportComponentByKey(id, params);
+                break;
+            case "import_style_by_key":
+                yield handleImportStyleByKey(id, params);
+                break;
+            case "get_instance_info":
+                handleGetInstanceInfo(id, params);
+                break;
             default:
                 sendResponse(id, undefined, `Unknown action: ${action}`);
         }
@@ -820,4 +830,118 @@ function handleSetConstraints(id, params) {
         name: sceneNode.name,
         constraints: constraintNode.constraints,
     });
+}
+// --- Phase 5: External Library Handlers ---
+function handleImportComponentByKey(id, params) {
+    return __awaiter(this, void 0, void 0, function* () {
+        var _a, _b;
+        try {
+            const component = yield figma.importComponentByKeyAsync(params.key);
+            const instance = component.createInstance();
+            instance.x = (_a = params.x) !== null && _a !== void 0 ? _a : 0;
+            instance.y = (_b = params.y) !== null && _b !== void 0 ? _b : 0;
+            if (params.parentFrameId) {
+                const parent = figma.getNodeById(params.parentFrameId);
+                if (parent && "appendChild" in parent) {
+                    parent.appendChild(instance);
+                }
+                else {
+                    sendResponse(id, undefined, `Parent node ${params.parentFrameId} not found or is not a container`);
+                    return;
+                }
+            }
+            sendResponse(id, {
+                nodeId: instance.id,
+                name: instance.name,
+                componentKey: component.key,
+                componentName: component.name,
+                width: instance.width,
+                height: instance.height,
+            });
+        }
+        catch (e) {
+            sendResponse(id, undefined, `Failed to import component: ${e.message}`);
+        }
+    });
+}
+function handleImportStyleByKey(id, params) {
+    return __awaiter(this, void 0, void 0, function* () {
+        try {
+            const style = yield figma.importStyleByKeyAsync(params.key);
+            const node = figma.getNodeById(params.nodeId);
+            if (!node || node.type === "DOCUMENT" || node.type === "PAGE") {
+                sendResponse(id, undefined, `Node ${params.nodeId} not found`);
+                return;
+            }
+            const sceneNode = node;
+            const applied = [];
+            if (style.type === "PAINT") {
+                if (params.target === "stroke" && "strokeStyleId" in sceneNode) {
+                    sceneNode.strokeStyleId = style.id;
+                    applied.push("stroke");
+                }
+                else if ("fillStyleId" in sceneNode) {
+                    sceneNode.fillStyleId = style.id;
+                    applied.push("fill");
+                }
+            }
+            else if (style.type === "TEXT" && node.type === "TEXT") {
+                const textNode = node;
+                const textStyle = style;
+                yield figma.loadFontAsync(textStyle.fontName);
+                textNode.textStyleId = style.id;
+                applied.push("text");
+            }
+            else if (style.type === "EFFECT" && "effectStyleId" in sceneNode) {
+                sceneNode.effectStyleId = style.id;
+                applied.push("effect");
+            }
+            sendResponse(id, {
+                nodeId: sceneNode.id,
+                styleName: style.name,
+                styleType: style.type,
+                appliedTo: applied,
+            });
+        }
+        catch (e) {
+            sendResponse(id, undefined, `Failed to import style: ${e.message}`);
+        }
+    });
+}
+function handleGetInstanceInfo(id, params) {
+    const node = figma.getNodeById(params.nodeId);
+    if (!node) {
+        sendResponse(id, undefined, `Node ${params.nodeId} not found`);
+        return;
+    }
+    if (node.type === "INSTANCE") {
+        const instance = node;
+        const main = instance.mainComponent;
+        sendResponse(id, {
+            nodeId: instance.id,
+            name: instance.name,
+            type: "INSTANCE",
+            mainComponent: main ? {
+                nodeId: main.id,
+                name: main.name,
+                key: main.key,
+                remote: main.remote,
+                parent: main.parent ? { nodeId: main.parent.id, name: main.parent.name, type: main.parent.type } : null,
+            } : null,
+            componentProperties: instance.componentProperties,
+        });
+    }
+    else if (node.type === "COMPONENT") {
+        const comp = node;
+        sendResponse(id, {
+            nodeId: comp.id,
+            name: comp.name,
+            type: "COMPONENT",
+            key: comp.key,
+            remote: comp.remote,
+        });
+    }
+    else {
+        sendResponse(id, undefined, `Node ${params.nodeId} is ${node.type}, not an INSTANCE or COMPONENT`);
+    }
 }
