@@ -62,10 +62,21 @@ function extractEffects(node: SceneNode): any[] | undefined {
   if (!("effects" in node)) return undefined;
   const effects = (node as BlendMixin).effects;
   if (!Array.isArray(effects)) return undefined;
-  return effects.map((e: Effect) => ({
-    type: e.type,
-    visible: e.visible,
-  }));
+  return effects.map((e: Effect) => {
+    const base: any = { type: e.type, visible: e.visible };
+    if (e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW") {
+      const s = e as DropShadowEffect;
+      base.color = s.color;
+      base.offset = s.offset;
+      base.radius = s.radius;
+      base.spread = (s as any).spread ?? 0;
+      base.blendMode = s.blendMode;
+      base.showShadowBehindNode = (s as any).showShadowBehindNode ?? false;
+    } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
+      base.radius = (e as BlurEffect).radius;
+    }
+    return base;
+  });
 }
 
 function extractTextProps(node: TextNode): Record<string, any> {
@@ -121,7 +132,8 @@ function getNodeDetails(node: SceneNode): Record<string, any> {
   details.effects = extractEffects(node);
 
   if ("strokeWeight" in node) {
-    details.strokeWeight = (node as GeometryMixin).strokeWeight;
+    const sw = (node as GeometryMixin).strokeWeight;
+    details.strokeWeight = sw !== figma.mixed ? sw : "mixed";
   }
 
   if (node.type === "TEXT") {
@@ -170,6 +182,13 @@ figma.ui.onmessage = async (msg: any) => {
         break;
       case "list_nodes":
         handleListNodes(id);
+        break;
+      case "list_pages":
+        handleListPages(id);
+        break;
+      case "get_file_info":
+        // figu.currentUser requires manifest permission, skipping for now
+        sendResponse(id, { key: figma.fileKey });
         break;
 
       // Phase 1: Read
@@ -243,6 +262,52 @@ figma.ui.onmessage = async (msg: any) => {
         break;
       case "get_instance_info":
         handleGetInstanceInfo(id, params);
+        break;
+      case "list_library_components":
+        await handleListLibraryComponents(id);
+        break;
+
+      // Phase 6: Variable Binding
+      case "bind_variable":
+        await handleBindVariable(id, params);
+        break;
+      case "list_variables":
+        handleListVariables(id, params);
+        break;
+      case "list_library_variables":
+        await handleListLibraryVariables(id, params);
+        break;
+      case "import_variable_by_key":
+        await handleImportVariableByKey(id, params);
+        break;
+      case "list_external_references":
+        handleListExternalReferences(id);
+        break;
+      case "find_node_by_name":
+        handleFindNodeByName(id, params);
+        break;
+      case "set_variable_mode":
+        await handleSetVariableMode(id, params);
+        break;
+
+      // Phase 7: Variable Creation & Component System
+      case "create_variable_collection":
+        handleCreateVariableCollection(id, params);
+        break;
+      case "create_variable":
+        handleCreateVariable(id, params);
+        break;
+      case "set_variable_value":
+        handleSetVariableValue(id, params);
+        break;
+      case "bind_variable_number":
+        handleBindVariableNumber(id, params);
+        break;
+      case "create_component_from_frame":
+        handleCreateComponentFromFrame(id, params);
+        break;
+      case "apply_variable_mode_local":
+        handleApplyVariableModeLocal(id, params);
         break;
 
       default:
@@ -348,6 +413,15 @@ function handleListNodes(id: string) {
   }));
 
   sendResponse(id, { nodes });
+}
+
+function handleListPages(id: string) {
+  const pages = figma.root.children.map((p) => ({
+    id: p.id,
+    name: p.name,
+    type: p.type,
+  }));
+  sendResponse(id, { pages });
 }
 
 // --- Phase 1: Read Handlers ---
@@ -470,6 +544,27 @@ function handleUpdateNode(id: string, params: any) {
 
   if (params.strokeWeight !== undefined && "strokeWeight" in sceneNode) {
     (sceneNode as GeometryMixin).strokeWeight = params.strokeWeight;
+  }
+
+  if (params.effects !== undefined && "effects" in sceneNode) {
+    const built: Effect[] = (params.effects as any[]).map((e: any) => {
+      if (e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW") {
+        return {
+          type: e.type,
+          visible: e.visible ?? true,
+          color: e.color ?? { r: 0, g: 0, b: 0, a: 0.25 },
+          offset: e.offset ?? { x: 0, y: 2 },
+          radius: e.radius ?? 8,
+          spread: e.spread ?? 0,
+          blendMode: e.blendMode ?? "NORMAL",
+          showShadowBehindNode: e.showShadowBehindNode ?? false,
+        } as DropShadowEffect;
+      } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
+        return { type: e.type, visible: e.visible ?? true, radius: e.radius ?? 4 } as BlurEffect;
+      }
+      return e as Effect;
+    });
+    (sceneNode as BlendMixin).effects = built;
   }
 
   sendResponse(id, getNodeDetails(sceneNode));
@@ -648,11 +743,17 @@ function handleSetAutoLayout(id: string, params: any) {
     frame.paddingLeft = params.padding;
   }
 
+  if (params.paddingTop !== undefined) frame.paddingTop = params.paddingTop;
+  if (params.paddingRight !== undefined) frame.paddingRight = params.paddingRight;
+  if (params.paddingBottom !== undefined) frame.paddingBottom = params.paddingBottom;
+  if (params.paddingLeft !== undefined) frame.paddingLeft = params.paddingLeft;
+
   if (params.alignItems !== undefined) {
     frame.primaryAxisAlignItems = params.alignItems === "CENTER" ? "CENTER" :
       params.alignItems === "END" ? "MAX" : "MIN";
-    frame.counterAxisAlignItems = params.alignItems === "CENTER" ? "CENTER" :
-      params.alignItems === "END" ? "MAX" : "MIN";
+    const counterAlign = params.counterAlignItems || params.alignItems;
+    frame.counterAxisAlignItems = counterAlign === "CENTER" ? "CENTER" :
+      counterAlign === "END" ? "MAX" : "MIN";
   }
 
   sendResponse(id, {
@@ -705,8 +806,26 @@ function findComponentsRecursive(node: BaseNode, query: string, results: any[]) 
 function handleSearchComponents(id: string, params: any) {
   const query = params.query || "";
   const results: any[] = [];
-  findComponentsRecursive(figma.currentPage, query, results);
+  findComponentsRecursive(figma.root, query, results);
   sendResponse(id, { components: results, count: results.length });
+}
+
+async function handleListLibraryComponents(id: string) {
+  try {
+    const libApi = figma.teamLibrary as any;
+    if (typeof libApi.getAvailableComponentsAsync !== "function") {
+      sendResponse(id, undefined, "This version of Figma API does not support listing library components directly.");
+      return;
+    }
+    const components = await libApi.getAvailableComponentsAsync();
+    const results = components.map((c: any) => ({
+      key: c.key,
+      name: c.name,
+    }));
+    sendResponse(id, { components: results, count: results.length });
+  } catch (e: any) {
+    sendResponse(id, undefined, `Failed to list library components: ${e.message}`);
+  }
 }
 
 function handleCreateInstance(id: string, params: any) {
@@ -906,9 +1025,38 @@ function handleSetConstraints(id: string, params: any) {
 
 // --- Phase 5: External Library Handlers ---
 
+async function loadAllFontsInNode(node: SceneNode) {
+  if (node.type === "TEXT") {
+    const textNode = node as TextNode;
+    const len = textNode.characters.length;
+    if (len === 0) {
+      const fn = textNode.fontName;
+      if (fn !== figma.mixed) await figma.loadFontAsync(fn as FontName);
+    } else {
+      const loaded = new Set<string>();
+      for (let i = 0; i < len; i++) {
+        const fn = textNode.getRangeFontName(i, i + 1) as FontName;
+        const key = `${fn.family}::${fn.style}`;
+        if (!loaded.has(key)) {
+          loaded.add(key);
+          await figma.loadFontAsync(fn);
+        }
+      }
+    }
+  }
+  if ("children" in node) {
+    for (const child of (node as ChildrenMixin).children) {
+      await loadAllFontsInNode(child as SceneNode);
+    }
+  }
+}
+
 async function handleImportComponentByKey(id: string, params: any) {
   try {
     const component = await figma.importComponentByKeyAsync(params.key);
+
+    // Pre-load all fonts used in the component before creating instance
+    await loadAllFontsInNode(component as SceneNode);
 
     const instance = component.createInstance();
     instance.x = params.x ?? 0;
@@ -1013,5 +1161,391 @@ function handleGetInstanceInfo(id: string, params: any) {
     });
   } else {
     sendResponse(id, undefined, `Node ${params.nodeId} is ${node.type}, not an INSTANCE or COMPONENT`);
+  }
+}
+
+// --- Phase 6: Variable Binding Handlers ---
+
+function handleListVariables(id: string, params: any) {
+  const collections = figma.variables.getLocalVariableCollections();
+  const result: any[] = [];
+
+  for (const col of collections) {
+    const colInfo: Record<string, any> = {
+      id: col.id,
+      name: col.name,
+      modes: col.modes.map((m) => ({ modeId: m.modeId, name: m.name })),
+      variables: [],
+    };
+
+    for (const varId of col.variableIds) {
+      const v = figma.variables.getVariableById(varId);
+      if (!v) continue;
+      if (params.resolvedType && v.resolvedType !== params.resolvedType) continue;
+
+      colInfo.variables.push({
+        id: v.id,
+        name: v.name,
+        resolvedType: v.resolvedType,
+      });
+    }
+
+    if (colInfo.variables.length > 0) {
+      result.push(colInfo);
+    }
+  }
+
+  sendResponse(id, { collections: result });
+}
+
+async function handleBindVariable(id: string, params: any) {
+  const node = figma.getNodeById(params.nodeId);
+  if (!node || node.type === "DOCUMENT" || node.type === "PAGE") {
+    sendResponse(id, undefined, `Node ${params.nodeId} not found`);
+    return;
+  }
+  const sceneNode = node as SceneNode;
+
+  // Find variable by ID or name (local first, then try imported)
+  let variable: Variable | null = null;
+
+  if (params.variableId) {
+    variable = figma.variables.getVariableById(params.variableId);
+  } else if (params.variableKey) {
+    // Import from library by key
+    try {
+      variable = await figma.variables.importVariableByKeyAsync(params.variableKey);
+    } catch (e: any) {
+      sendResponse(id, undefined, `Failed to import variable by key: ${e.message}`);
+      return;
+    }
+  } else if (params.variableName) {
+    // Search local variables first
+    const collections = figma.variables.getLocalVariableCollections();
+    for (const col of collections) {
+      for (const varId of col.variableIds) {
+        const v = figma.variables.getVariableById(varId);
+        if (v && v.name === params.variableName) {
+          variable = v;
+          break;
+        }
+      }
+      if (variable) break;
+    }
+  }
+
+  if (!variable) {
+    sendResponse(id, undefined, `Variable "${params.variableName || params.variableId}" not found. Use list_library_variables to find remote variables, then bind using variableKey.`);
+    return;
+  }
+
+  const field = params.field || "fills"; // fills, strokes, effects, etc.
+
+  try {
+    if (field === "fills" && "fills" in sceneNode) {
+      const fills = [(figma as any).variables.setBoundVariableForPaint(
+        { type: "SOLID", color: { r: 0, g: 0, b: 0 }, opacity: 1 },
+        "color",
+        variable
+      )];
+      (sceneNode as GeometryMixin).fills = fills;
+    } else if (field === "strokes" && "strokes" in sceneNode) {
+      const strokes = [(figma as any).variables.setBoundVariableForPaint(
+        { type: "SOLID", color: { r: 0, g: 0, b: 0 }, opacity: 1 },
+        "color",
+        variable
+      )];
+      (sceneNode as GeometryMixin).strokes = strokes;
+    } else {
+      sendResponse(id, undefined, `Unsupported field: ${field}`);
+      return;
+    }
+
+    sendResponse(id, {
+      nodeId: sceneNode.id,
+      name: sceneNode.name,
+      boundVariable: variable.name,
+      field: field,
+    });
+  } catch (e: any) {
+    sendResponse(id, undefined, `Failed to bind variable: ${e.message}`);
+  }
+}
+
+// --- Phase 6b: Library Variable Handlers ---
+
+async function handleListLibraryVariables(id: string, params: any) {
+  try {
+    const libApi = figma.teamLibrary as any;
+    if (typeof libApi.getAvailableVariableCollectionsAsync !== "function") {
+      sendResponse(id, undefined, "This version of Figma API does not support listing library variable collections.");
+      return;
+    }
+
+    const collections = await libApi.getAvailableVariableCollectionsAsync();
+    const result: any[] = [];
+
+    for (const col of collections) {
+      const colInfo: Record<string, any> = {
+        key: col.key,
+        name: col.name,
+        libraryName: col.libraryName,
+        variables: [],
+      };
+
+      // Get variables in this collection
+      if (typeof libApi.getAvailableVariablesInCollectionAsync === "function") {
+        try {
+          const vars = await libApi.getAvailableVariablesInCollectionAsync(col.key);
+          for (const v of vars) {
+            // Filter by resolvedType if specified
+            if (params.resolvedType && v.resolvedType !== params.resolvedType) continue;
+            // Filter by name if specified
+            if (params.nameFilter && !v.name.toLowerCase().includes(params.nameFilter.toLowerCase())) continue;
+            colInfo.variables.push({
+              key: v.key,
+              name: v.name,
+              resolvedType: v.resolvedType,
+            });
+          }
+        } catch (e: any) {
+          colInfo.error = `Failed to list variables: ${e.message}`;
+        }
+      }
+
+      // Filter by library name if specified
+      if (params.libraryFilter && !col.libraryName.toLowerCase().includes(params.libraryFilter.toLowerCase())) continue;
+
+      if (colInfo.variables.length > 0 || !params.resolvedType) {
+        result.push(colInfo);
+      }
+    }
+
+    sendResponse(id, { collections: result, count: result.length });
+  } catch (e: any) {
+    sendResponse(id, undefined, `Failed to list library variables: ${e.message}`);
+  }
+}
+
+async function handleImportVariableByKey(id: string, params: any) {
+  try {
+    const variable = await figma.variables.importVariableByKeyAsync(params.key);
+    sendResponse(id, {
+      id: variable.id,
+      name: variable.name,
+      key: variable.key,
+      resolvedType: variable.resolvedType,
+    });
+  } catch (e: any) {
+    sendResponse(id, undefined, `Failed to import variable: ${e.message}`);
+  }
+}
+
+function handleListExternalReferences(id: string) {
+  const externalKeys = new Set<string>();
+  const externalFiles = new Map<string, string>(); // ComponentKey -> FileName (if available)
+
+  function traverse(node: BaseNode) {
+    if (node.type === "INSTANCE") {
+      const instance = node as InstanceNode;
+      const main = instance.mainComponent;
+      if (main && main.remote) {
+        externalKeys.add(main.key);
+        // We might not know the file name here, but let's collect keys.
+      }
+    } else if (node.type === "COMPONENT") {
+      const comp = node as ComponentNode;
+      if (comp.remote) {
+        externalKeys.add(comp.key);
+      }
+    }
+
+    if ("children" in node) {
+      for (const child of (node as ChildrenMixin).children) {
+        traverse(child);
+      }
+    }
+  }
+
+  // Traverse the entire document
+  traverse(figma.root);
+
+  // Traverse styles too
+  const paintStyles = figma.getLocalPaintStyles();
+  paintStyles.forEach(s => {
+    if (s.remote) {
+      // Styles don't have a simple 'key' property exposed the same way as components easily?
+      // Actually they do have .key but it's not always consistent with components.
+      // Let's focus on components first as requested "external files" usually implies libraries.
+      // But let's check if we can get style keys.
+      if ((s as any).key) externalKeys.add((s as any).key);
+    }
+  });
+
+  sendResponse(id, { keys: Array.from(externalKeys) });
+}
+
+function handleFindNodeByName(id: string, params: any) {
+  const query = params.query;
+  const results: any[] = [];
+
+  function traverse(node: BaseNode) {
+    if (node.name.toLowerCase().includes(query.toLowerCase())) {
+      results.push({
+        nodeId: node.id,
+        name: node.name,
+        type: node.type
+      });
+    }
+    if ("children" in node) {
+      for (const child of (node as ChildrenMixin).children) {
+        traverse(child);
+      }
+    }
+  }
+
+  traverse(figma.root);
+  sendResponse(id, { nodes: results });
+}
+
+async function handleSetVariableMode(id: string, params: any) {
+  const node = figma.getNodeById(params.nodeId) as SceneNode;
+  if (!node) {
+    sendResponse(id, undefined, `Node ${params.nodeId} not found`);
+    return;
+  }
+  try {
+    // Import the collection from the library by key
+    const collection = await (figma.variables as any).importVariableCollectionByKeyAsync(params.collectionKey);
+    // Find the mode by name or use modeId directly
+    let modeId: string = params.modeId;
+    if (!modeId && params.modeName) {
+      const mode = collection.modes.find((m: any) => m.name.toLowerCase().includes(params.modeName.toLowerCase()));
+      if (!mode) {
+        sendResponse(id, undefined, `Mode "${params.modeName}" not found`);
+        return;
+      }
+      modeId = mode.modeId;
+    }
+    (figma.variables as any).setVariableModeOnNode(node, collection, modeId);
+    sendResponse(id, { nodeId: params.nodeId, collectionKey: params.collectionKey, modeId });
+  } catch (e: any) {
+    sendResponse(id, undefined, `set_variable_mode failed: ${e.message}`);
+  }
+}
+
+// --- Phase 7: Variable Creation & Component System ---
+
+function handleCreateVariableCollection(id: string, params: any) {
+  // params: { name: string, modes: string[] }
+  try {
+    const collection = figma.variables.createVariableCollection(params.name);
+    const modes: string[] = params.modes || [];
+    if (modes.length > 0) {
+      collection.renameMode(collection.modes[0].modeId, modes[0]);
+      for (let i = 1; i < modes.length; i++) {
+        collection.addMode(modes[i]);
+      }
+    }
+    sendResponse(id, {
+      id: collection.id,
+      name: collection.name,
+      modes: collection.modes.map((m: any) => ({ modeId: m.modeId, name: m.name }))
+    });
+  } catch (e: any) {
+    sendResponse(id, undefined, `create_variable_collection failed: ${e.message}`);
+  }
+}
+
+function handleCreateVariable(id: string, params: any) {
+  // params: { collectionId: string, name: string, type: "NUMBER"|"STRING"|"BOOLEAN"|"COLOR" }
+  try {
+    const collection = figma.variables.getVariableCollectionById(params.collectionId);
+    if (!collection) {
+      sendResponse(id, undefined, `Collection ${params.collectionId} not found`);
+      return;
+    }
+    const variable = figma.variables.createVariable(params.name, collection, params.type || "NUMBER");
+    sendResponse(id, {
+      id: variable.id,
+      name: variable.name,
+      resolvedType: variable.resolvedType
+    });
+  } catch (e: any) {
+    sendResponse(id, undefined, `create_variable failed: ${e.message}`);
+  }
+}
+
+function handleSetVariableValue(id: string, params: any) {
+  // params: { variableId: string, modeId: string, value: any }
+  try {
+    const variable = figma.variables.getVariableById(params.variableId);
+    if (!variable) {
+      sendResponse(id, undefined, `Variable ${params.variableId} not found`);
+      return;
+    }
+    variable.setValueForMode(params.modeId, params.value);
+    sendResponse(id, { variableId: params.variableId, modeId: params.modeId, value: params.value });
+  } catch (e: any) {
+    sendResponse(id, undefined, `set_variable_value failed: ${e.message}`);
+  }
+}
+
+function handleBindVariableNumber(id: string, params: any) {
+  // params: { nodeId: string, variableId: string, field: "width"|"height"|"cornerRadius"|"fontSize"|"paddingLeft"|"paddingRight"|"paddingTop"|"paddingBottom"|"itemSpacing" }
+  try {
+    const node = figma.getNodeById(params.nodeId) as any;
+    if (!node) {
+      sendResponse(id, undefined, `Node ${params.nodeId} not found`);
+      return;
+    }
+    const variable = figma.variables.getVariableById(params.variableId);
+    if (!variable) {
+      sendResponse(id, undefined, `Variable ${params.variableId} not found`);
+      return;
+    }
+    node.setBoundVariable(params.field, variable);
+    sendResponse(id, { nodeId: params.nodeId, field: params.field, variableId: params.variableId });
+  } catch (e: any) {
+    sendResponse(id, undefined, `bind_variable_number failed: ${e.message}`);
+  }
+}
+
+function handleCreateComponentFromFrame(id: string, params: any) {
+  // params: { nodeId: string }
+  try {
+    const node = figma.getNodeById(params.nodeId);
+    if (!node || (node.type !== "FRAME" && node.type !== "GROUP")) {
+      sendResponse(id, undefined, `Node ${params.nodeId} is not a FRAME or GROUP`);
+      return;
+    }
+    const component = figma.createComponentFromNode(node as FrameNode);
+    sendResponse(id, {
+      componentId: component.id,
+      name: component.name,
+      key: component.key
+    });
+  } catch (e: any) {
+    sendResponse(id, undefined, `create_component_from_frame failed: ${e.message}`);
+  }
+}
+
+function handleApplyVariableModeLocal(id: string, params: any) {
+  // params: { nodeId: string, collectionId: string, modeId: string }
+  try {
+    const node = figma.getNodeById(params.nodeId) as SceneNode;
+    if (!node) {
+      sendResponse(id, undefined, `Node ${params.nodeId} not found`);
+      return;
+    }
+    const collection = figma.variables.getVariableCollectionById(params.collectionId);
+    if (!collection) {
+      sendResponse(id, undefined, `Collection ${params.collectionId} not found`);
+      return;
+    }
+    (node as any).setExplicitVariableModeForCollection(collection, params.modeId);
+    sendResponse(id, { nodeId: params.nodeId, collectionId: params.collectionId, modeId: params.modeId });
+  } catch (e: any) {
+    sendResponse(id, undefined, `apply_variable_mode_local failed: ${e.message}`);
   }
 }

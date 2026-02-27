@@ -2,16 +2,26 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebSocketServer, WebSocket } from "ws";
 import { z } from "zod";
+import * as http from 'http';
 
 // --- WebSocket Server ---
 const WS_PORT = 9000;
+const HTTP_PORT = 9001;
 let figmaSocket: WebSocket | null = null;
 let pendingRequests = new Map<string, { resolve: (value: any) => void; reject: (reason: any) => void }>();
 let requestId = 0;
 
 const wss = new WebSocketServer({ host: "0.0.0.0", port: WS_PORT });
 
+// Debug logging
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+const logPath = path.join(os.homedir(), 'Desktop', 'claudetofigma', 'mcp-debug.log');
+fs.writeFileSync(logPath, `Server started at ${new Date().toISOString()}\\n`);
+
 wss.on("connection", (ws) => {
+  fs.appendFileSync(logPath, `Client connected at ${new Date().toISOString()}\\n`);
   console.error(`[WS] Figma plugin connected`);
   figmaSocket = ws;
 
@@ -44,6 +54,36 @@ wss.on("connection", (ws) => {
 });
 
 console.error(`[WS] WebSocket server listening on port ${WS_PORT}`);
+
+// --- HTTP Command Bridge (port 9001) ---
+// Script'lerden plugin'e komut göndermeye yarar — plugin bağlantısını kesmez
+const cmdServer = http.createServer((req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  if (req.method === 'POST' && req.url === '/command') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { action, params } = JSON.parse(body);
+        const result = await sendToFigma(action, params);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ result }));
+      } catch (e: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+  } else if (req.method === 'GET' && req.url === '/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ pluginConnected: figmaSocket?.readyState === WebSocket.OPEN }));
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
+});
+cmdServer.listen(HTTP_PORT, '127.0.0.1', () => {
+  console.error(`[HTTP] Command bridge listening on port ${HTTP_PORT}`);
+});
 
 function sendToFigma(action: string, params: Record<string, any>): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -332,11 +372,18 @@ server.tool(
 
 server.tool(
   "search_components",
-  "Search for components and component sets in the current page by name. Returns component IDs, keys, variant properties, and children.",
+  "Search for components and component sets in the entire document (all pages) by name. Returns component IDs, keys, variant properties, and children.",
   {
     query: z.string().optional().default("").describe("Search query to filter component names (case-insensitive, partial match). Leave empty to list all components."),
   },
   async (params) => mcpCall("search_components", params)
+);
+
+server.tool(
+  "list_library_components",
+  "Discover components from external team libraries that are enabled in the current Figma file. Returns component keys and names for use with import_component_by_key.",
+  {},
+  async () => mcpCall("list_library_components", {})
 );
 
 server.tool(
@@ -430,6 +477,52 @@ server.tool(
     nodeId: z.string().describe("Instance or Component node ID"),
   },
   async (params) => mcpCall("get_instance_info", params)
+);
+
+// =====================
+// Phase 6: Variable Binding Tools
+// =====================
+
+server.tool(
+  "list_variables",
+  "List all local variables in the Figma file, optionally filtered by type (COLOR, FLOAT, STRING, BOOLEAN)",
+  {
+    resolvedType: z.string().optional().describe("Filter by variable type: COLOR, FLOAT, STRING, BOOLEAN"),
+  },
+  async (params) => mcpCall("list_variables", params)
+);
+
+server.tool(
+  "bind_variable",
+  "Bind a Figma variable (e.g. color token) to a node's fill or stroke. Uses the variable reference, not a hardcoded value.",
+  {
+    nodeId: z.string().describe("Node ID to bind the variable to"),
+    variableName: z.string().optional().describe("Variable name to bind (e.g. 'level/surface') - searches local variables only"),
+    variableId: z.string().optional().describe("Variable ID to bind (alternative to variableName)"),
+    variableKey: z.string().optional().describe("Variable key from team library (use list_library_variables to find keys, then bind directly with this)"),
+    field: z.enum(["fills", "strokes"]).default("fills").describe("Which property to bind: fills or strokes"),
+  },
+  async (params) => mcpCall("bind_variable", params)
+);
+
+server.tool(
+  "list_library_variables",
+  "List available variables from enabled team libraries (external/remote variables). Use this to find variable keys for binding.",
+  {
+    libraryFilter: z.string().optional().describe("Filter by library name (e.g. 'FellowKit', 'Base')"),
+    nameFilter: z.string().optional().describe("Filter by variable name (e.g. 'surface', 'level')"),
+    resolvedType: z.string().optional().describe("Filter by variable type: COLOR, FLOAT, STRING, BOOLEAN"),
+  },
+  async (params) => mcpCall("list_library_variables", params)
+);
+
+server.tool(
+  "import_variable_by_key",
+  "Import a variable from an external team library by its key. Returns the imported variable details.",
+  {
+    key: z.string().describe("Variable key from the team library"),
+  },
+  async (params) => mcpCall("import_variable_by_key", params)
 );
 
 // --- Start ---

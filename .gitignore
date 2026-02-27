@@ -1,2 +1,7 @@
 node_modules/
 dist/
+.env
+*.log
+.claude/
+local-library-analysis.json
+local-library-catalog.json
