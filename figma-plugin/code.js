@@ -309,6 +309,9 @@
             case "apply_variable_mode_local":
               handleApplyVariableModeLocal(id, params);
               break;
+            case "create_component_set":
+              handleCreateComponentSet(id, params);
+              break;
             default:
               sendResponse(id, void 0, `Unknown action: ${action}`);
           }
@@ -1387,6 +1390,56 @@
         } catch (e) {
           sendResponse(id, void 0, `apply_variable_mode_local failed: ${e.message}`);
         }
+      }
+      function handleCreateComponentSet(id, params) {
+        return __async(this, null, function* () {
+          try {
+            const sourceNode = figma.getNodeById(params.nodeId);
+            if (!sourceNode || sourceNode.type !== "FRAME") {
+              sendResponse(id, void 0, `Node ${params.nodeId} is not a FRAME`);
+              return;
+            }
+            const variantProp = params.variantProperty || "Breakpoint";
+            const variants = params.variants || [
+              { name: "Desktop", width: 254, height: 48, fontSize: 16 },
+              { name: "Tablet",  width: 200, height: 44, fontSize: 15 },
+              { name: "Mobile",  width: 160, height: 40, fontSize: 14 }
+            ];
+            // Pre-load fonts
+            const allTextNodes = sourceNode.findAll((n) => n.type === "TEXT");
+            for (const t of allTextNodes) {
+              yield figma.loadFontAsync(t.fontName);
+            }
+            const components = [];
+            for (const variant of variants) {
+              const clone = sourceNode.clone();
+              clone.name = `${variantProp}=${variant.name}`;
+              clone.resize(variant.width, variant.height);
+              if (variant.fontSize !== void 0) {
+                const textNodes = clone.findAll((n) => n.type === "TEXT");
+                for (const t of textNodes) {
+                  t.fontSize = variant.fontSize;
+                  t.resize(variant.width - t.x * 2, t.height);
+                }
+              }
+              const component = figma.createComponentFromNode(clone);
+              component.name = `${variantProp}=${variant.name}`;
+              components.push(component);
+            }
+            const componentSet = figma.combineAsVariants(components, figma.currentPage);
+            componentSet.name = params.setName || sourceNode.name;
+            componentSet.x = sourceNode.x + sourceNode.width + 80;
+            componentSet.y = sourceNode.y;
+            sendResponse(id, {
+              componentSetId: componentSet.id,
+              name: componentSet.name,
+              variantCount: components.length,
+              variants: components.map((c) => ({ id: c.id, name: c.name }))
+            });
+          } catch (e) {
+            sendResponse(id, void 0, `create_component_set failed: ${e.message}`);
+          }
+        });
       }
     }
   });

@@ -3,5 +3,7 @@ dist/
 .env
 *.log
 .claude/
+
+# Figma API analysis output (large JSON files)
 local-library-analysis.json
 local-library-catalog.json

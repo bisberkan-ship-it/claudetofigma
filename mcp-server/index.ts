@@ -525,6 +525,23 @@ server.tool(
   async (params) => mcpCall("import_variable_by_key", params)
 );
 
+server.tool(
+  "create_component_set",
+  "Create a Figma component set (with variants) from a frame. Generates Desktop, Tablet, and Mobile variants by default.",
+  {
+    nodeId: z.string().describe("Source frame node ID"),
+    setName: z.string().optional().describe("Name for the component set (defaults to source frame name)"),
+    variantProperty: z.string().optional().default("Breakpoint").describe("Variant property name (default: 'Breakpoint')"),
+    variants: z.array(z.object({
+      name: z.string().describe("Variant name, e.g. 'Desktop'"),
+      width: z.number().describe("Width in pixels"),
+      height: z.number().describe("Height in pixels"),
+      fontSize: z.number().optional().describe("Font size override for text nodes"),
+    })).optional().describe("Variant definitions. Defaults to Desktop/Tablet/Mobile if omitted."),
+  },
+  async (params) => mcpCall("create_component_set", params)
+);
+
 // --- Start ---
 async function main() {
   const transport = new StdioServerTransport();
