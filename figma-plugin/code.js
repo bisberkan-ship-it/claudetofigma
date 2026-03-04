@@ -217,6 +217,9 @@
         case "clone_node":
           handleCloneNode(id, params);
           break;
+        case "detach_instance":
+          handleDetachInstance(id, params);
+          break;
         case "move_node":
           handleMoveNode(id, params);
           break;
@@ -596,6 +599,15 @@
     clone.x = (_a = params.x) != null ? _a : sceneNode.x + 20;
     clone.y = (_b = params.y) != null ? _b : sceneNode.y;
     sendResponse(id, getNodeDetails(clone));
+  }
+  function handleDetachInstance(id, params) {
+    const node = figma.getNodeById(params.nodeId);
+    if (!node || node.type !== "INSTANCE") {
+      sendResponse(id, void 0, `Instance node ${params.nodeId} not found`);
+      return;
+    }
+    const frame = node.detachInstance();
+    sendResponse(id, getNodeDetails(frame));
   }
   function handleMoveNode(id, params) {
     const node = figma.getNodeById(params.nodeId);

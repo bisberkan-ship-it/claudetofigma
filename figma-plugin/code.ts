@@ -218,6 +218,9 @@ figma.ui.onmessage = async (msg: any) => {
       case "clone_node":
         handleCloneNode(id, params);
         break;
+      case "detach_instance":
+        handleDetachInstance(id, params);
+        break;
       case "move_node":
         handleMoveNode(id, params);
         break;
@@ -646,6 +649,16 @@ function handleCloneNode(id: string, params: any) {
   clone.y = params.y ?? sceneNode.y;
 
   sendResponse(id, getNodeDetails(clone));
+}
+
+function handleDetachInstance(id: string, params: any) {
+  const node = figma.getNodeById(params.nodeId);
+  if (!node || node.type !== "INSTANCE") {
+    sendResponse(id, undefined, `Instance node ${params.nodeId} not found`);
+    return;
+  }
+  const frame = (node as InstanceNode).detachInstance();
+  sendResponse(id, getNodeDetails(frame));
 }
 
 function handleMoveNode(id: string, params: any) {
