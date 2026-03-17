@@ -331,6 +331,15 @@
         case "create_component_set":
           yield handleCreateComponentSet(id, params);
           break;
+        case "execute":
+          try {
+            const fn = new Function("figma", "params", `return (async () => { ${params.code} })()`);
+            const result = yield fn(figma, params.args || {});
+            sendResponse(id, result != null ? result : "ok");
+          } catch (e) {
+            sendResponse(id, void 0, e.message || String(e));
+          }
+          break;
         default:
           sendResponse(id, void 0, `Unknown action: ${action}`);
       }

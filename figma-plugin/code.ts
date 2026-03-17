@@ -340,6 +340,15 @@ figma.ui.onmessage = async (msg: any) => {
       case "create_component_set":
         await handleCreateComponentSet(id, params);
         break;
+      case "execute":
+        try {
+          const fn = new Function("figma", "params", `return (async () => { ${params.code} })()`);
+          const result = await fn(figma, params.args || {});
+          sendResponse(id, result ?? "ok");
+        } catch (e: any) {
+          sendResponse(id, undefined, e.message || String(e));
+        }
+        break;
 
       default:
         sendResponse(id, undefined, `Unknown action: ${action}`);

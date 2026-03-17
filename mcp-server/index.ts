@@ -10,18 +10,19 @@ const HTTP_PORT = 9001;
 let figmaSocket: WebSocket | null = null;
 let pendingRequests = new Map<string, { resolve: (value: any) => void; reject: (reason: any) => void }>();
 let requestId = 0;
-
-const wss = new WebSocketServer({ host: "0.0.0.0", port: WS_PORT });
+let useHttpBridge = false; // Port 9000 doluysa HTTP bridge kullan
 
 // Debug logging
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 const logPath = path.join(os.homedir(), 'Desktop', 'claudetofigma', 'mcp-debug.log');
-fs.writeFileSync(logPath, `Server started at ${new Date().toISOString()}\\n`);
+fs.writeFileSync(logPath, `Server started at ${new Date().toISOString()}\n`);
+
+const wss = new WebSocketServer({ host: "0.0.0.0", port: WS_PORT });
 
 wss.on("connection", (ws) => {
-  fs.appendFileSync(logPath, `Client connected at ${new Date().toISOString()}\\n`);
+  fs.appendFileSync(logPath, `Client connected at ${new Date().toISOString()}\n`);
   console.error(`[WS] Figma plugin connected`);
   figmaSocket = ws;
 
@@ -45,7 +46,6 @@ wss.on("connection", (ws) => {
   ws.on("close", () => {
     console.error(`[WS] Figma plugin disconnected`);
     figmaSocket = null;
-    // Reject all pending requests
     for (const [id, pending] of pendingRequests) {
       pending.reject(new Error("Figma plugin disconnected"));
     }
@@ -53,10 +53,22 @@ wss.on("connection", (ws) => {
   });
 });
 
-console.error(`[WS] WebSocket server listening on port ${WS_PORT}`);
+wss.on("error", (err: any) => {
+  if (err.code === 'EADDRINUSE') {
+    // Port 9000 zaten kullanımda — HTTP bridge moduna geç
+    useHttpBridge = true;
+    console.error(`[WS] Port ${WS_PORT} already in use — switching to HTTP bridge mode (port ${HTTP_PORT})`);
+    fs.appendFileSync(logPath, `HTTP bridge mode at ${new Date().toISOString()}\n`);
+  } else {
+    console.error(`[WS] Error:`, err);
+  }
+});
+
+wss.on("listening", () => {
+  console.error(`[WS] WebSocket server listening on port ${WS_PORT}`);
+});
 
 // --- HTTP Command Bridge (port 9001) ---
-// Script'lerden plugin'e komut göndermeye yarar — plugin bağlantısını kesmez
 const cmdServer = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method === 'POST' && req.url === '/command') {
@@ -75,7 +87,7 @@ const cmdServer = http.createServer((req, res) => {
     });
   } else if (req.method === 'GET' && req.url === '/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ pluginConnected: figmaSocket?.readyState === WebSocket.OPEN }));
+    res.end(JSON.stringify({ pluginConnected: useHttpBridge ? true : figmaSocket?.readyState === WebSocket.OPEN }));
   } else {
     res.writeHead(404);
     res.end();
@@ -84,14 +96,21 @@ const cmdServer = http.createServer((req, res) => {
 cmdServer.listen(HTTP_PORT, '127.0.0.1', () => {
   console.error(`[HTTP] Command bridge listening on port ${HTTP_PORT}`);
 });
+cmdServer.on("error", (err: any) => {
+  if (err.code !== 'EADDRINUSE') console.error(`[HTTP] Error:`, err);
+});
 
+// sendToFigma: WS bağlıysa direkt, değilse HTTP bridge üzerinden
 function sendToFigma(action: string, params: Record<string, any>): Promise<any> {
-  return new Promise((resolve, reject) => {
-    if (!figmaSocket || figmaSocket.readyState !== WebSocket.OPEN) {
-      reject(new Error("Figma plugin is not connected. Please open the plugin in Figma first."));
-      return;
+  // HTTP bridge modunda — zaten çalışan sunucuya forward et
+  if (useHttpBridge || (!figmaSocket || figmaSocket.readyState !== WebSocket.OPEN)) {
+    if (useHttpBridge) {
+      return sendViaHttpBridge(action, params);
     }
+    return Promise.reject(new Error("Figma plugin is not connected. Please open the plugin in Figma first."));
+  }
 
+  return new Promise((resolve, reject) => {
     const id = String(++requestId);
     const timeout = setTimeout(() => {
       pendingRequests.delete(id);
@@ -103,7 +122,34 @@ function sendToFigma(action: string, params: Record<string, any>): Promise<any> 
       reject: (reason) => { clearTimeout(timeout); reject(reason); },
     });
 
-    figmaSocket.send(JSON.stringify({ id, action, params }));
+    figmaSocket!.send(JSON.stringify({ id, action, params }));
+  });
+}
+
+function sendViaHttpBridge(action: string, params: Record<string, any>): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ action, params });
+    const req = http.request(
+      { hostname: '127.0.0.1', port: HTTP_PORT, path: '/command', method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } },
+      (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.error) reject(new Error(parsed.error));
+            else resolve(parsed.result);
+          } catch (e) {
+            reject(new Error('Invalid response from HTTP bridge'));
+          }
+        });
+      }
+    );
+    req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('HTTP bridge timeout')); });
+    req.write(body);
+    req.end();
   });
 }
 
@@ -540,6 +586,15 @@ server.tool(
     })).optional().describe("Variant definitions. Defaults to Desktop/Tablet/Mobile if omitted."),
   },
   async (params) => mcpCall("create_component_set", params)
+);
+
+server.tool(
+  "execute",
+  "Execute arbitrary JavaScript code inside Figma (async supported). Use figma API directly. Return value is serialized as JSON.",
+  {
+    code: z.string().describe("JavaScript code to execute in Figma plugin context"),
+  },
+  async (params) => mcpCall("execute", params)
 );
 
 // --- Start ---
